@@ -102,27 +102,35 @@ int processArgs(int argc, char ** argv)
   argv++;
   argc--;
 
-  while (argc > 0) {
+  // Search the list of arguments and try to find each in this list
+  while (argc > 0)
+  {
+    // The current argument/parameter
     sz_current = *argv;
     
-    if (sz_current[0] != '-' ) {
+    // No solitary dashes???
+    if (sz_current[0] != '-' )
+    {
       printf("** Invalid command line at : '%s'\n", sz_current);
       showHelp();
       i_err = -1;
       break;
     }
 
+    // Look in all other possible arguments
     switch (sz_current[1]) 
     {
     case '?':
+      // The standard show help argument.
       showHelp();
       break;      
     case 'v':
     case 'V':
+      // Verbose mode detected.
       b_verbose = true;
       break;
     case 'e':
-      if (argc > 1)
+      if (argc > i)
       {
         argc--;
         argv++;
@@ -135,10 +143,13 @@ int processArgs(int argc, char ** argv)
       }
       break;
     case 'f':
+      // Filename given
       if (argc > 1)
       {
         argc--;
         argv++;
+        
+        // Set the filename variable to this argument/parameter
         strncpy(sz_filename, *argv, MAX_FILENAME_LENGTH);
       }
       else
@@ -152,6 +163,8 @@ int processArgs(int argc, char ** argv)
       {
         argc--;
         argv++;
+        
+        // Set the device id variable to this argument/parameter
         i_deviceId = atoi(*argv);
       }
       else
@@ -165,6 +178,8 @@ int processArgs(int argc, char ** argv)
       {
         argc--;
         argv++;
+        
+        // Set the number of frames variable to this argument/parameter
         n_frames = atoi(*argv);
       }
       else
@@ -178,6 +193,8 @@ int processArgs(int argc, char ** argv)
       {
         argc--;
         argv++;
+        
+        // Set the window width variable to this argument/parameter
         t_window = atoi(*argv);
       }
       else
@@ -212,7 +229,8 @@ int processArgs(int argc, char ** argv)
       i_err = -3;
       break;
     }
-    if (i_err < 0) {
+    if (i_err < 0)
+    {
       break;
     }
     argv++;
@@ -224,7 +242,6 @@ int processArgs(int argc, char ** argv)
 
 /*! \Initilisation method
  *         Code to take the CLI user-arguments to control the image aquisition.
- *
  */
 int init()
 {
@@ -258,7 +275,6 @@ int init()
 
 /*! \Shutdown method
  *         Code to close the library
- *
  */
 int shutdown()
 {
@@ -273,7 +289,6 @@ int shutdown()
 /*! \updateImageSize method
  *         Code to find the image size for the attached device.
  *         2560 x 2160 (5.5 Megapixel) for teh ANdor Zyla 5.5
- *
  */
 int updateImageSize()
 {
@@ -303,10 +318,10 @@ int updateImageSize()
   return i_err;
 }
 
-/*! \updateImageSize method
- *         Code to find the image size for the attached device.
- *         2560 x 2160 (5.5 Megapixel) for teh ANdor Zyla 5.5
- *
+/*! \setupAcq method
+ *         Code to find store the settings of the camera.
+ *         This means you don't need to hrd-code the settings for the camera, they will be automatically figured out.
+ *         We may hard-code them in future.
  */
 int setupAcq()
 {
@@ -407,6 +422,9 @@ int setupAcq()
   return i_err;
 }
 
+/*! \printAcqSettings method
+ *         Code to print the settings to the terminal.
+ */
 int printAcqSettings()
 {
   int i_err = 0;
@@ -443,6 +461,9 @@ int printAcqSettings()
   return i_err;
 }
 
+/*! \collectStats method
+ *         Code to get some stats on the current image.
+ */
 int collectStats(unsigned char * _puc_image, AT_64 _i64_width, AT_64 _i64_height, AT_64 _i64_stride)
 {
   unsigned short* pus_image = reinterpret_cast<unsigned short*>(_puc_image);
@@ -477,6 +498,9 @@ int collectStats(unsigned char * _puc_image, AT_64 _i64_width, AT_64 _i64_height
   return 0;
 }
 
+/*! \acquire_frame method
+ *         Code to capture a single frame.
+ */
 int acquire_frame()
 {
   int i_err = 0;
@@ -550,34 +574,44 @@ int main(int argc, char ** argv)
   int i_err = processArgs(argc, argv);
   
   // Process the input arguments
-  if (i_err == 0) {
-    if (b_verbose) {
+  if (i_err == 0)
+  {
+    if (b_verbose)
+    {
       printParams();
     }
     
+    // Initilise the library/camera using init function
     i_err = init();
-    if (i_err == 0) {
+    if (i_err == 0)
+    {
+      // All good, so setup the aquisition details
       i_err = setupAcq();
     }
-
-    if (i_err == 0 && b_verbose) {
+    
+    // Print the aquisition settings if given verbose option
+    if (i_err == 0 && b_verbose)
+    {
       i_err = printAcqSettings();
     }
     
+    // Assuming no errors then we can do the capturing
     if (i_err == 0)
     {
       // Capture n frames
 		  for(int i = 0; i < n_frames; i++)
       {
+        // Capture a single frame
         i_err = acquire_frame();
       }
       
-      // Capture time window
+      // Capture frames over time window (in s seconds)
       gettimeofday(&tv, 0);
       gettimeofday(&tv_end, 0);
       tv_end.tv_sec = tv_end.tv_sec + t_window;
       while (tv.tv_sec <= tv_end.tv_sec)
       {
+        // Get the frame
         i_err = acquire_frame();
         
         // Get current date/time, based on <sys/time.h>
@@ -586,10 +620,13 @@ int main(int argc, char ** argv)
       
     }
     
-    if (i_err == 0) {
+    // Assuming no errors, shutdown the camera using the shutdown method
+    if (i_err == 0)
+    {
       i_err = shutdown();
     }
     
   }
+  // Close the program
   exit(i_err);
 }
