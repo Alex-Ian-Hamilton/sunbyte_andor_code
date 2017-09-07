@@ -130,7 +130,7 @@ int processArgs(int argc, char ** argv)
       b_verbose = true;
       break;
     case 'e':
-      if (argc > i)
+      if (argc > 1)
       {
         argc--;
         argv++;
