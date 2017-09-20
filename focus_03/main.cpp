@@ -1,0 +1,914 @@
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <iostream>
+#include <sys/time.h>
+
+#include "atcore.h"
+#include "common.h"
+#include "saveAsBmp.h"
+
+#include <sstream>
+
+// For delay/sleep methods
+#include <chrono>
+#include <thread>
+using namespace std::this_thread; // sleep_for, sleep_until
+using namespace std::chrono; // nanoseconds, system_clock, seconds
+
+//************************************
+//*** Data
+//************************************
+const int MAX_FILENAME_LENGTH = 256;
+
+bool b_verbose = false;
+
+int n_frames = 0;
+
+long int t_window = 0;
+
+char sz_filename[MAX_FILENAME_LENGTH] = "image";
+
+char sz_focus_folder[14] = "images_focus/";
+char sz_image_folder[14] = "images_image/";
+char sz_compressed_folder[14] = "images_compr/";
+
+char sz_filename_full[500] = "";
+
+char sz_fileextension[5] = "bmp";
+
+int i_deviceId = 0;
+
+int i_handle = AT_HANDLE_UNINITIALISED;
+
+double d_exposureTime = 0.1;
+
+// Some frame-specific variables
+AT_64 i64_contrast;
+
+AT_64 i64_aoiHeight = 0, i64_aoiWidth = 0;
+
+AT_64 i64_max = 2047;
+AT_64 i64_min = 0;
+
+int i_minScale = -1;
+int i_maxScale = -1;
+
+// Focus parameter
+int numFocusFrames = 5;
+int numFocusSteps = 1;
+float focusThreshold = 0.0;
+int focusIterLim = 10;
+long focusMoveDelay = 0;
+
+// variables for storing the time when aquiring
+timeval tv, tv_start, tv_end;
+
+//************************************
+//*** Functions
+//************************************
+
+
+int showHelp()
+{
+  printf("Andor SDK 3 Image Capture Example Program\n"
+         "\n"
+         "Usage:\n"
+         "    image [-?] [-vV] [-e <expTime>] [-f <filename>] [-d <device>]\n"
+         "          [s <min> <max>]\n"
+         "\n"
+         "Synopsis:\n"
+         "  Captures a single full frame image and saves it to a bitmap.\n"
+         "\n"
+         "Arguments:\n"
+         "  -?             : Show this help\n"
+         "  -v/-V          : Verbose mode\n"
+         "  -e <exptime>   : Sets the exposure to the specified float value\n"
+         "  -f <filename>  : Saves the bitmap to the specified file\n"
+         "  -d <device>    : Acquires from the device number specified\n"
+         "  -s <min> <max> : Scales the image to the output palette with\n"
+         "                   the specified min and max count values. If\n"
+         "                   unspecified, the max and min of the image is used\n"
+         "  -n             : Number of frames to capture. Each will have time in the name\n"
+         "  -t             : Time window to capture for. Each will have time in the name\n"
+         "  -h/H           : Number of frames to average over when focusing.\n"
+         "  -i/I           : Number of steps to move the focus.\n"
+         "  -j/J           : Focus threshold. (mini contrast difference required to change focus)\n"
+         "  -k/K           : Focus iteration limite, max number of iterations before we finish.\n"
+         "  -l/L           : Focus movement delay. (int in seconds)\n"
+         "\n"
+         );     
+  return 0;
+}
+
+int printParams()
+{
+  printf("Camera:\n");
+  printf("  Device Id :\t\t%d\n", i_deviceId);
+  printf("  Exposure :\t\t%0.8f secs\n", d_exposureTime);
+
+  printf("Aquisition:\n");
+  printf("  Filename Prefix :\t%s\n", sz_filename);
+  printf("  Number of Frames :\t%d\n", n_frames);
+  
+  printf("Focus:\n");
+  printf("  Num Average Frames :\t%d\n", numFocusFrames);
+  printf("  Num Steps :\t\t%d\n", numFocusSteps);
+  printf("  Threshold :\t\t%f\n", focusThreshold);
+  printf("  Iteration Limit :\t%d\n", focusIterLim);
+  printf("  Movement Delay :\t%ld\t%ld\n", focusMoveDelay, focusMoveDelay * 1000000000);
+  
+  // Add a line break
+  printf("\n");
+  return 0; 
+}
+
+/*! \Argument processing method
+ *         Code to take the CLI user-arguments to control the image aquisition.
+ * - v or V: verbose, so you get more details on what steps have run.
+ * - e: exposure in ...
+ * - f: filename for output BMP image
+ * - d:
+ * - s:
+ */
+int processArgs(int argc, char ** argv)
+{
+  int i_err = 0;
+  char * sz_current;
+  // Skip program name;
+  argv++;
+  argc--;
+
+  // Search the list of arguments and try to find each in this list
+  while (argc > 0)
+  {
+    // The current argument/parameter
+    sz_current = *argv;
+    
+    // No solitary dashes???
+    if (sz_current[0] != '-' )
+    {
+      printf("** Invalid command line at : '%s'\n", sz_current);
+      showHelp();
+      i_err = -1;
+      break;
+    }
+
+    // Look in all other possible arguments
+    switch (sz_current[1]) 
+    {
+    case '?':
+      // The standard show help argument.
+      showHelp();
+      break;      
+    case 'v':
+    case 'V':
+      // Verbose mode detected.
+      b_verbose = true;
+      break;
+    case 'e':
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        d_exposureTime = atof(*argv);
+      }
+      else
+      {
+        i_err = -4;
+        printf("No exposure value given\n");
+      }
+      break;
+    case 'f':
+      // Filename given
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the filename variable to this argument/parameter
+        strncpy(sz_filename, *argv, MAX_FILENAME_LENGTH);
+      }
+      else
+      {
+        i_err = -5;
+        printf("No filename given\n");
+      }      
+      break;
+    case 'd':
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the device id variable to this argument/parameter
+        i_deviceId = atoi(*argv);
+      }
+      else
+      {
+        i_err = -4;
+        printf("No device id given\n");
+      }
+      break;
+    case 'n':
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the number of frames variable to this argument/parameter
+        n_frames = atoi(*argv);
+      }
+      else
+      {
+        i_err = -4;
+        printf("No frame number given.\n");
+      }
+      break;
+    case 't':
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the window width variable to this argument/parameter
+        t_window = atoi(*argv);
+      }
+      else
+      {
+        i_err = -4;
+        printf("No time window number (of secs) given.\n");
+      }
+      break;
+    case 's':
+      if (argc > 2)
+      {
+        argc--;
+        argv++;
+        i_minScale = atoi(*argv);
+        argc--;
+        argv++;
+        i_maxScale = atoi(*argv);        
+      }
+      else {
+        i_err = -4;
+        printf("No device id given\n");
+      }
+      break;      
+    case 'H':
+    case 'h':
+      // number of frames for averaging while checking focus.
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the number of frames variable to this argument/parameter
+        numFocusFrames = atoi(*argv);
+      }
+      break;
+    case 'I':
+    case 'i':
+      // number of steps to move the focuser.
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the number of steps argument/parameter
+        numFocusSteps = atoi(*argv);
+      }
+      break;
+    case 'J':
+    case 'j':
+      // Focus difference threshold.
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the Focus difference threshold
+        focusThreshold = atoi(*argv);
+      }
+      break;
+    case 'K':
+    case 'k':
+      // Focus iteration limit.
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the Focus iteration limit.
+        focusIterLim = atoi(*argv);
+      }
+      break;
+    case 'L':
+    case 'l':
+      // Focus movement delay.
+      if (argc > 1)
+      {
+        argc--;
+        argv++;
+        
+        // Set the Focus movement delay.
+        focusMoveDelay = atoi(*argv);
+      }
+      break;
+    case '\0':
+      printf("** Invalid empty option\n");
+      showHelp();
+      i_err = -2;
+      break;
+    // Any additional arguments added retrun an error
+    default:
+      printf("** Unknown option : '%c'\n", sz_current[1]);
+      showHelp();
+      i_err = -3;
+      break;
+    }
+    if (i_err < 0)
+    {
+      break;
+    }
+    argv++;
+    argc--;
+  }
+
+  return i_err;
+}
+
+/*! \Initilisation method
+ *         Code to take the CLI user-arguments to control the image aquisition.
+ */
+int init()
+{
+  // var to hold error code (0 for no error)
+  int i_err = 0;
+  
+  // initilise the Andor library
+  i_err = AT_InitialiseLibrary();
+  
+  // whats the returned code
+  if (errorOk(i_err, "AT_InitialiseLibrary"))
+  {
+    // in the event of non-fatal errors
+    if (b_verbose)
+    {
+      // if verbose we want to get the device count back
+      AT_64 i64_deviceCount = 0;
+      i_err = AT_GetInt(AT_HANDLE_SYSTEM, L"Device Count", &i64_deviceCount);
+      if (errorOk(i_err, "AT_GetInt 'Device Count'"))
+      {
+        std::cout << "Found " << i64_deviceCount << " Devices." << std::endl;
+      }
+    }
+  
+    i_err = AT_Open(i_deviceId, &i_handle);    
+    errorOk(i_err, "AT_Open");
+  }
+  
+  return i_err;
+}
+
+/*! \Shutdown method
+ *         Code to close the library
+ */
+int shutdown()
+{
+  int i_err = 0;
+  AT_Close(i_handle); // Don't check in case not opened.
+
+  i_err = AT_FinaliseLibrary();
+  errorOk(i_err, "AT_FinaliseLibrary");  
+  return i_err;
+}
+
+/*! \updateImageSize method
+ *         Code to find the image size for the attached device.
+ *         2560 x 2160 (5.5 Megapixel) for teh ANdor Zyla 5.5
+ */
+int updateImageSize()
+{
+  // 
+  int i_available = 0, i_err = 0;
+  
+  // 
+  const AT_WC * wsz_featureName = L"AOI Width";
+  AT_IsImplemented(i_handle, wsz_featureName, &i_available);    
+  if (!i_available)
+  {
+    wsz_featureName = L"Sensor Width";  
+  }
+  i_err = AT_GetInt(i_handle, wsz_featureName, &i64_aoiWidth);    
+  if (errorOk(i_err, "AT_GetInt 'Width'"))
+  {
+  
+    wsz_featureName = L"AOI Height";
+    AT_IsImplemented(i_handle, wsz_featureName, &i_available);    
+    if (!i_available)
+    {
+      wsz_featureName = L"Sensor Height";  
+    }
+    i_err = AT_GetInt(i_handle, wsz_featureName, &i64_aoiHeight);    
+    errorOk(i_err, "AT_GetInt 'Height'");
+  }  
+  return i_err;
+}
+
+/*! \setupAcq method
+ *         Code to find and store the settings of the camera.
+ *         This means you don't need to hard-code camera setting, they will be automatically figured out.
+ *         We may hard-code them in future to save time/code.
+ */
+int setupAcq()
+{
+  int i_err = 0;
+  bool b_set16bit = false;
+  
+  i_err = AT_SetFloat(i_handle, L"Exposure Time", d_exposureTime);
+  if (errorOk(i_err, "AT_SetInt 'Exposure Time'"))
+  {
+  
+    int i_available = 0;
+    AT_IsImplemented(i_handle, L"AOI Height", &i_available);    
+    if (i_available)
+    {
+      AT_IsWritable(i_handle, L"AOI Height", &i_available);    
+      if (i_available)
+      {      
+        i_err = AT_GetIntMax(i_handle, L"AOI Height", &i64_aoiHeight);
+        if (errorOk(i_err, "AT_GetIntMax 'AOI Height'"))
+        {
+          i_err = AT_SetInt(i_handle, L"AOI Height", i64_aoiHeight);    
+          if (errorOk(i_err, "AT_SetInt 'AOI Height'") && b_verbose)
+          {
+            std::cout << "Set AOI height to " << i64_aoiHeight << std::endl;
+          }
+        }
+      }
+    }
+
+    AT_IsImplemented(i_handle, L"AOI Width", &i_available);    
+    if (i_available) {
+    
+      AT_IsWritable(i_handle, L"AOI Width", &i_available);    
+      if (i_available)
+      {          
+        i_err = AT_GetIntMax(i_handle, L"AOI Width", &i64_aoiWidth);
+        if (errorOk(i_err, "AT_GetintMax 'AOI Width'"))
+        {
+          i_err = AT_SetInt(i_handle, L"AOI Width", i64_aoiWidth);    
+          if (errorOk(i_err, "AT_SetInt 'AOI Width'") && b_verbose)
+          {
+            std::cout << "Set AOI Width to " << i64_aoiWidth << std::endl;
+          }      
+        }
+      }
+    }
+    
+    AT_IsImplemented(i_handle, L"SimplePreAmpGainControl", &i_available);
+    if (i_available)
+    {
+      i_err = AT_SetEnumString(i_handle, L"SimplePreAmpGainControl", L"16-bit (low noise & high well capacity)");  
+      if (errorOk(i_err, "AT_SetEnumString 'SimplePreAmpGainControl'"))
+      {
+        if (b_verbose)
+        {
+          std::cout << "Set SimplePreAmpGainControl to " <<  "16-bit (low noise & high well capacity)" << std::endl;
+        }
+        b_set16bit = true;
+      }
+      else
+      {
+        b_set16bit = false;
+      }
+        
+    }
+    
+    AT_IsImplemented(i_handle, L"PixelEncoding", &i_available);    
+    if (i_available)
+    {
+    
+      AT_IsWritable(i_handle, L"PixelEncoding", &i_available);    
+      if (i_available)
+      {  
+                
+        if (b_set16bit)
+        {
+          i_err = AT_SetEnumString(i_handle, L"PixelEncoding", L"Mono16");    
+          if (errorOk(i_err, "AT_SetEnumString 'PixelEncoding'") && b_verbose)
+          {
+            std::cout << "Set PixelEncoding to " <<  "Mono16" << std::endl;
+          }      
+        }
+        else {
+          i_err = AT_SetEnumString(i_handle, L"PixelEncoding", L"Mono12Packed");
+          if (errorOk(i_err, "AT_SetEnumString 'PixelEncoding'") && b_verbose)
+          {
+            std::cout << "Set PixelEncoding to " <<  "Mono12Packed" << std::endl;
+          }      
+        }
+        
+      }
+    }
+  }
+  if (i_err == 0)
+  {
+    i_err = updateImageSize();
+  }    
+  return i_err;
+}
+
+/*! \printAcqSettings method
+ *         Code to print the settings to the terminal.
+ */
+int printAcqSettings()
+{
+  int i_err = 0;
+  int i_available = 0;
+  AT_64 i64_value = 0;
+  AT_IsImplemented(i_handle, L"AOI Height", &i_available);    
+  if (i_available) {
+    i_err = AT_GetInt(i_handle, L"AOI Height", &i64_value);    
+    if (errorOk(i_err, "AT_GetInt 'AOI Height'"))
+    {
+      std::cout << "AOI Height = " << i64_value << std::endl;
+    }
+  }
+
+  AT_IsImplemented(i_handle, L"AOI Width", &i_available);    
+  if (i_available)
+  {
+    i_err = AT_GetInt(i_handle, L"AOI Width", &i64_value);    
+    if (errorOk(i_err, "AT_GetInt 'AOI Width'"))
+    {
+      std::cout << "AOI Width = " << i64_value << std::endl;
+    }
+  }
+  double d_value = 0;
+  AT_IsImplemented(i_handle, L"Actual Exposure Time", &i_available);    
+  if (i_available)
+  {
+    i_err = AT_GetFloat(i_handle, L"Actual Exposure Time", &d_value);    
+    if (errorOk(i_err, "AT_GetFloat 'Actual Exposure Time'"))
+    {
+      std::cout << "Actual Exposure Time = " << d_value << std::endl;
+    }
+  }
+  return i_err;
+}
+
+/*! \collectStats method
+ *         Code to get some stats on the current image.
+ */
+int collectStats(unsigned char * _puc_image, AT_64 _i64_width, AT_64 _i64_height, AT_64 _i64_stride)
+{
+  unsigned short* pus_image = reinterpret_cast<unsigned short*>(_puc_image);
+  i64_max = *pus_image;
+  i64_min = *pus_image;
+  AT_64 i64_total = 0;
+
+  // Check each pixel in the image
+  // Each horizontal line
+  for (AT_64 jj = 0; jj < _i64_height; jj++)
+  {
+    pus_image = reinterpret_cast<unsigned short*>(_puc_image);
+    // Each pixel in the horizontal line
+    for (AT_64 ii = 0; ii < _i64_width; ii++)
+    {
+      // Get the current pixel value
+      unsigned short ui_current = *(pus_image++) & 0x07FF;
+      
+      // If this pixel has a lower value then the current min the change the min
+      if (ui_current < i64_min)
+      {
+        i64_min = ui_current;
+      }
+      
+      // If this pixel has a higher value then the current max the change the max
+      else if (ui_current > i64_max)
+      {
+        i64_max = ui_current;
+      }
+      
+      // Add this count value to the total sum
+      i64_total += ui_current;    
+    }
+    _puc_image += _i64_stride;
+  }
+  
+  // Calculate the contrast
+  i64_contrast = i64_max - i64_min;
+  
+  if (b_verbose)
+  {
+    //std::cout << "        Average pixel value = " << (i64_total / (_i64_width * _i64_height)) << std::endl;
+    //std::cout << "        Min pixel value     = " << i64_min << std::endl;
+    //std::cout << "        Max pixel value     = " << i64_max << std::endl;    
+    printf("        Min/Max:\t%lld\t%lld\n", i64_min, i64_max);
+  }      
+  return 0;
+}
+
+/*! \acquire_frame method
+ *         Code to capture a single frame.
+ */
+int acquire_frame(char *folder)
+{
+  int i_err = 0;
+  
+  // Get the image size/shape details for memory allocation usage
+  AT_64 i64_sizeInBytes, i64_aoiStride;
+  AT_GetInt(i_handle, L"ImageSizeBytes", &i64_sizeInBytes);
+  AT_GetInt(i_handle, L"AOIStride", &i64_aoiStride);
+  
+  // Create an image array of the correct size
+  unsigned char * puc_image = new unsigned char[i64_sizeInBytes];
+  
+  // Set a buffer for the given image
+  i_err = AT_QueueBuffer(i_handle, puc_image, i64_sizeInBytes);
+  if (errorOk(i_err, "AT_QueueBuffer"))
+  {
+    // The image buffer was made sucessfully
+    
+    // Start the image aquisition
+    i_err = AT_Command(i_handle, L"Acquisition Start");
+    if (errorOk(i_err, "AT_Command 'Acquisition Start'"))
+    {
+      // Make a pointer for the buffer
+      unsigned char * puc_returnBuf = NULL;
+      int i64_bufSize = 0;
+      
+      // Specify a timeout limit (I assume for if the aquisition crashes)
+      unsigned int ui_timeout = static_cast<unsigned int>(3 * d_exposureTime * 1000);
+      
+      // Minimum UI timeout of 500
+      if (ui_timeout < 500)
+      {
+        ui_timeout = 500;
+      }
+      
+      // Wait for the buffer to be filled with the image and remap the puc_returnBuf pointer
+      i_err = AT_WaitBuffer(i_handle, &puc_returnBuf, &i64_bufSize, ui_timeout);
+      if (errorOk(i_err, "AT_WaitBuffer"))
+      {
+        // The buffer filled and accessible using puc_returnBuf pointer
+        
+        // I think this checks the puc_returnBuf references the puc_image in memory now
+        if (puc_returnBuf != puc_image)
+        {
+          i_err = -1;
+          std::cout << "Returned buffer not equal to queued buffer" << std::endl;
+        }
+        else if (i64_bufSize != i64_sizeInBytes)
+        {
+          i_err = -2;
+          std::cout << "Returned buffer size not correct :  Expected " << i64_sizeInBytes 
+                    << ", Actual " << i64_bufSize << std::endl;
+        }
+        else
+        {
+          // The image was aquired
+          
+          // Get the stats about the image
+          collectStats(puc_returnBuf, i64_aoiWidth, i64_aoiHeight, i64_aoiStride);
+          
+          // Update the min/max values if they haven't already
+          if (i_minScale < 0)
+          {
+            i_minScale = i64_min;
+            i_maxScale = i64_max;
+          }
+          
+          // Get current date/time, based on <sys/time.h>
+          gettimeofday(&tv, 0);
+          
+          // Get the file name string
+          sprintf(sz_filename_full, "%s%s_%ld_%ld.%s", folder, sz_filename, tv.tv_sec, tv.tv_usec,sz_fileextension);
+
+          // Save the output as a BMP file
+          saveAsBmp(sz_filename_full, puc_returnBuf, i64_aoiWidth, i64_aoiHeight, i64_aoiStride, i_minScale, i_maxScale);
+        }
+      }
+    }
+    // Stop the aquisition
+    AT_Command(i_handle, L"AcquisitionStop");
+    
+    // Flush all remaing buffers
+    AT_Flush(i_handle);
+  }
+  
+  // Free up the memory used for the image
+  delete [] puc_image;
+  
+  // 
+  return i_err;
+}
+
+
+// take a series of images and output the average contrast
+int getContrast(int numFrames)
+{
+  printf("        getContrast Function\n");
+  
+  // 
+	int contrastArray[numFrames]={0},i;
+	float sum=0,avg=0;
+  
+  //
+	for(i=0;i<numFrames;i++)
+  {
+    printf("\n        Frame:\t\t%d\n", i);
+  	acquire_frame(sz_focus_folder);
+	  contrastArray[i]=i64_contrast;
+    printf("        Contrast:\t%lld\n", i64_contrast);
+	  sum += (float)i64_contrast;
+    printf("        Sum contrasts:\t%f\n", sum);
+	}
+	avg = sum / (numFrames);
+  printf("      Ave Contrast:\t%f\n", avg);
+  printf("\n");
+	return avg;
+}
+
+// Move the focus motor a given number of steps
+int moveFocus(int steps)
+{
+  // Currently a holder function
+  printf("      Focus moved:\t%d\n", steps);
+  
+  // Add a delay for manual movement
+  sleep_for(nanoseconds(focusMoveDelay *1000000000));
+  printf("      ** Waiting %ld second.\n", focusMoveDelay);
+  
+  // Now return the movement distance
+  return steps;
+}
+  
+
+// comparing if the scope is currently in focus
+// Looks at the focus a little foward and a little backwards to see which is most focused
+// Returns a value for how many steps to move
+// If the returned value is 0, we are in focus
+int compareFocus(int numSteps, int numFrames)
+{
+	printf("    compareFocus Function\n");
+  
+  // Holders for the contrast of the 3 images
+  int contrastBack=0, contrastMid=0, contrastForward=0;
+  
+  // Move focus down to get the minus image position
+	moveFocus(-numSteps);
+	contrastBack=getContrast(numFrames);
+  
+  // Move focus up to plus image position
+	moveFocus(numSteps*2);
+  contrastForward=getContrast(numFrames);
+	
+  // Move focus back up to the central position (this is what we're testing is in focus)
+  moveFocus(-numSteps);
+	contrastMid=getContrast(numFrames);
+	// So now the system is focused to the middle again, this is the image we're testing is in focus.
+
+  
+  // Are we in focus? (does the middle image have the highest contrast)
+	if(contrastMid + focusThreshold >= contrastBack && contrastMid + focusThreshold >= contrastForward)
+  {
+    // contrastMid is highest? (we're in focus)
+    // No need to move focus and then return
+    return 0;
+	}
+	else if (contrastBack >= contrastMid + focusThreshold && contrastBack >= contrastForward)
+  {
+    // contrastBack is highest (we need to move focus down)
+    // Move to the new focus position and return
+    moveFocus(-1*numSteps);
+    return -1*numSteps;
+	}
+	else if (contrastForward >= contrastMid + focusThreshold && contrastForward >= contrastBack)
+  {
+    // contrastForward is highest? (we're need to move focus up)
+    moveFocus(numSteps);
+    return numSteps;
+	}
+  else
+  {
+    // This is the one fringe case, if both the forward and backward images are the same and more in focus then the central image.
+    return 0;
+  }
+}
+
+
+// the main checkfocusfunction
+// 
+int focusScope(int numSteps, int numFrames)
+{  
+	printf("  focusScope Function\n");
+
+  // Some storage variales
+	int move=0;
+  int iterCount=0;
+  
+  // Check the central focus and see if it's optimum
+	do
+  {
+    // Which direction is best (0 means we're there)
+    move=compareFocus(numSteps, numFrames);
+
+    // Now change the central position if necessary
+    moveFocus(move);
+    
+    // Add to the iteration count and if we go over the focus iteration limit then stop the while loop
+    iterCount += 1;
+    if (iterCount > focusIterLim)
+    {
+      break;
+    }
+	}
+  while(move!=0); 
+  
+	// repeat when it is not in focus (move not =0)
+	return 0;
+  
+  printf("  checkfocus Function finished\n");
+}
+
+
+
+
+
+/* Main method that initiates the work */
+int main(int argc, char ** argv)
+{
+  // Process the input arguments
+  int i_err = processArgs(argc, argv);
+  
+  // Process the input arguments
+  if (i_err == 0)
+  {
+    if (b_verbose)
+    {
+      printParams();
+    }
+    
+    // Initilise the library/camera using init function
+    i_err = init();
+    if (i_err == 0)
+    {
+      // All good, so setup the aquisition details
+      i_err = setupAcq();
+    }
+    
+    // Print the aquisition settings if given verbose option
+    if (i_err == 0 && b_verbose)
+    {
+      i_err = printAcqSettings();
+    }
+    
+    // Assuming no errors then we can do the capturing
+    if (i_err == 0)
+    {
+      // The camera is now read for use
+      
+    //focusing
+    printf("Start Focusing\n");
+    focusScope(numFocusSteps, numFocusFrames); // need to add a return if focusing is error
+    printf("Finished Focusing\n");
+      
+      
+      // Capture n frames
+		  for(int i = 0; i < n_frames; i++)
+      {
+        // Capture a single frame
+        i_err = acquire_frame(sz_image_folder);
+      }
+      
+      // Capture frames over time window (in s seconds)
+      gettimeofday(&tv, 0);
+      //gettimeofday(&tv_end, 0);
+      tv_end.tv_sec = tv_end.tv_sec + t_window;
+      while (tv.tv_sec <= tv_end.tv_sec)
+      {
+        // Get the frame
+        i_err = acquire_frame(sz_image_folder);
+        
+        // Get current date/time, based on <sys/time.h>
+        gettimeofday(&tv, 0);
+      }
+      
+      
+    }
+    
+    // Assuming no errors, shutdown the camera using the shutdown method
+    if (i_err == 0)
+    {
+      i_err = shutdown();
+    }
+    
+  }
+  // Close the program
+  exit(i_err);
+}

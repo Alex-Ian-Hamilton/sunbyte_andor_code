@@ -319,9 +319,9 @@ int updateImageSize()
 }
 
 /*! \setupAcq method
- *         Code to find store the settings of the camera.
- *         This means you don't need to hrd-code the settings for the camera, they will be automatically figured out.
- *         We may hard-code them in future.
+ *         Code to find and store the settings of the camera.
+ *         This means you don't need to hard-code camera setting, they will be automatically figured out.
+ *         We may hard-code them in future to save time/code.
  */
 int setupAcq()
 {
@@ -505,30 +505,44 @@ int acquire_frame()
 {
   int i_err = 0;
   
-  // 
+  // Get the image size/shape details for memory allocation usage
   AT_64 i64_sizeInBytes, i64_aoiStride;
   AT_GetInt(i_handle, L"ImageSizeBytes", &i64_sizeInBytes);
   AT_GetInt(i_handle, L"AOIStride", &i64_aoiStride);
   
+  // Create an image array of the correct size
   unsigned char * puc_image = new unsigned char[i64_sizeInBytes];
   
+  // Set a buffer for the given image
   i_err = AT_QueueBuffer(i_handle, puc_image, i64_sizeInBytes);
   if (errorOk(i_err, "AT_QueueBuffer"))
   {
+    // The image buffer was made sucessfully
+    
+    // Start the image aquisition
     i_err = AT_Command(i_handle, L"Acquisition Start");
     if (errorOk(i_err, "AT_Command 'Acquisition Start'"))
     {
+      // Make a pointer for the buffer
       unsigned char * puc_returnBuf = NULL;
       int i64_bufSize = 0;
+      
+      // Specify a timeout limit (I assume for if the aquisition crashes)
       unsigned int ui_timeout = static_cast<unsigned int>(3 * d_exposureTime * 1000);
+      
+      // Minimum UI timeout of 500
       if (ui_timeout < 500)
       {
         ui_timeout = 500;
       }
       
+      // Wait for the buffer to be filled with the image and remap the puc_returnBuf pointer
       i_err = AT_WaitBuffer(i_handle, &puc_returnBuf, &i64_bufSize, ui_timeout);
       if (errorOk(i_err, "AT_WaitBuffer"))
       {
+        // The buffer filled and accessible using puc_returnBuf pointer
+        
+        // I think this checks the puc_returnBuf references the puc_image in memory now
         if (puc_returnBuf != puc_image)
         {
           i_err = -1;
@@ -542,12 +556,18 @@ int acquire_frame()
         }
         else
         {
+          // The image was aquired
+          
+          // Get the stats about the image
           collectStats(puc_returnBuf, i64_aoiWidth, i64_aoiHeight, i64_aoiStride);
+          
+          // Update the min/max values if they haven't already
           if (i_minScale < 0)
           {
             i_minScale = i64_min;
             i_maxScale = i64_max;
           }
+          
           // Get current date/time, based on <sys/time.h>
           gettimeofday(&tv, 0);
           
@@ -559,11 +579,17 @@ int acquire_frame()
         }
       }
     }
+    // Stop the aquisition
     AT_Command(i_handle, L"AcquisitionStop");
+    
+    // Flush all remaing buffers
     AT_Flush(i_handle);
-  } 
+  }
   
+  // Free up the memory used for the image
   delete [] puc_image;
+  
+  // 
   return i_err;
 }
 
@@ -598,6 +624,8 @@ int main(int argc, char ** argv)
     // Assuming no errors then we can do the capturing
     if (i_err == 0)
     {
+      // The camera is now read for use
+      
       // Capture n frames
 		  for(int i = 0; i < n_frames; i++)
       {

@@ -1,0 +1,25 @@
+# depslib dependency file v1.0
+1334672509 source:../../examples/image/main.cpp
+	<stdlib.h>
+	<stdio.h>
+	<string.h>
+	<iostream>
+	"atcore.h"
+	"common.h"
+	"saveAsBmp.h"
+
+1334566831 ../../examples/common.h
+
+1334566831 ../../examples/image/saveAsBmp.h
+
+1334566831 source:../../examples/common.cpp
+	<stdlib.h>
+	<stdio.h>
+	"atcore.h"
+	"common.h"
+
+1334566831 source:../../examples/image/saveAsBmp.cpp
+	<iostream>
+	<fstream>
+	"saveAsBmp.h"
+
